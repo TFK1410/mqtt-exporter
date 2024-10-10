@@ -25,5 +25,6 @@ MQTT_ENABLE_TLS = os.getenv("MQTT_ENABLE_TLS", "False") == "True"
 MQTT_TLS_NO_VERIFY = os.getenv("MQTT_TLS_NO_VERIFY", "False") == "True"
 PROMETHEUS_ADDRESS = os.getenv("PROMETHEUS_ADDRESS", "0.0.0.0")
 PROMETHEUS_PORT = int(os.getenv("PROMETHEUS_PORT", "9000"))
+PROMETHEUS_TTL = int(os.getenv("PROMETHEUS_TTL", "0"))
 
 KEEP_FULL_TOPIC = os.getenv("KEEP_FULL_TOPIC", "False") == "True"

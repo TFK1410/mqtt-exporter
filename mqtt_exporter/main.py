@@ -9,6 +9,7 @@ import re
 import signal
 import ssl
 import sys
+import time
 from dataclasses import dataclass
 
 import paho.mqtt.client as mqtt
@@ -39,6 +40,9 @@ STATE_VALUES = {
 # global variable
 prom_metrics = {}
 prom_msg_counter = None
+
+if settings.PROMETHEUS_TTL > 0:
+    prom_metrics_last_update = {}
 
 
 @dataclass(frozen=True)
@@ -136,7 +140,21 @@ def _add_prometheus_sample(topic, prom_metric_id, metric_value, client_id, addit
     labels.update(additional_labels)
 
     prom_metrics[prom_metric_id].labels(**labels).set(metric_value)
+    
+    if settings.PROMETHEUS_TTL > 0:
+        if not prom_metrics_last_update.get(prom_metric_id):
+            prom_metrics_last_update[prom_metric_id] = {}    
+        prom_metrics_last_update[prom_metric_id][topic] = {"time": time.time(), "labels": labels}
+        
     LOG.debug("new value for %s: %s", prom_metric_id, metric_value)
+    
+def _delete_prometheus_sample(prom_metric_id, labels):
+    if prom_metric_id not in prom_metrics:
+        return
+    
+    labels_list = [str(value) for key, value in labels.items()]
+    prom_metrics[prom_metric_id].remove(*labels_list)
+    LOG.debug("removing value for the labelset %s in the metric %s", str(labels), prom_metric_id)
 
 
 def _parse_metric(data):
@@ -416,6 +434,20 @@ def expose_metrics(_, userdata, msg):
 
     prom_msg_counter.labels(**labels).inc()
 
+def prometheus_metrics_ttl_loop():
+    while True:
+        curr_time = time.time()
+        for prom_metric_id, topics in prom_metrics_last_update.items():
+            topic_delete_list = []
+            for topic, value in topics.items():
+                if (curr_time - value['time']) > settings.PROMETHEUS_TTL:
+                    topic_delete_list.append(topic)
+                    _delete_prometheus_sample(prom_metric_id, value['labels'])
+                    
+            for topic_del in topic_delete_list:
+                del prom_metrics_last_update[prom_metric_id][topic_del]
+                
+        time.sleep(settings.PROMETHEUS_TTL / 4)
 
 def run():
     """Start the exporter."""
@@ -454,6 +486,8 @@ def run():
         """
         LOG.warning("Stopping MQTT exporter")
         LOG.debug("SIGNAL: %s, FRAME: %s", signum, frame)
+        if settings.PROMETHEUS_TTL > 0:
+            client.loop_stop()
         client.disconnect()
         sys.exit(0)
 
@@ -472,7 +506,13 @@ def run():
     if settings.MQTT_USERNAME and settings.MQTT_PASSWORD:
         client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)
     client.connect(settings.MQTT_ADDRESS, settings.MQTT_PORT, settings.MQTT_KEEPALIVE)
-    client.loop_forever()
+    
+    if settings.PROMETHEUS_TTL <= 0:
+        client.loop_forever()
+    
+    # else
+    client.loop_start()
+    prometheus_metrics_ttl_loop()
 
 
 def main():
